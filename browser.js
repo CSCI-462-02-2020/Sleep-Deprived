@@ -2345,7 +2345,7 @@ var gBrowserInit = {
           "BrowserHandler",
           "@mozilla.org/browser/clh;1",
           "nsIBrowserHandler"
-          );
+          ).defaultArgs;
 
       // If the given URI is different from the homepage, we want to load it.
       if (uri != defaultArgs) {
