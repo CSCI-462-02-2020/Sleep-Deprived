@@ -2340,7 +2340,7 @@ var gBrowserInit = {
       let defaultArgs = Cc["@mozilla.org/browser/clh;1"].getService(
         Ci.nsIBrowserHandler
       ).defaultArgs;*/
-      let defaultArgs = XPCOMUtil.defineLazyServiceGetter(
+      let defaultArgs = XPCOMUtils.defineLazyServiceGetter(
           this,
           "BrowserHandler",
           "@mozilla.org/browser/clh;1",
@@ -4855,7 +4855,7 @@ function OpenBrowserWindow(options) {
     Ci.nsIBrowserHandler
   );
 */
-  var handler = XPCOMUtil.defineLazyServiceGetter(
+  var handler = XPCOMUtils.defineLazyServiceGetter(
     this,
     "BrowserHandler",
     "@mozilla.org/browser/clh;1",
