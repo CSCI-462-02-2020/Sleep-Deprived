@@ -2336,16 +2336,9 @@ var gBrowserInit = {
       }
 
       let uri = window.arguments[0];
-      /*
       let defaultArgs = Cc["@mozilla.org/browser/clh;1"].getService(
         Ci.nsIBrowserHandler
-      ).defaultArgs;*/
-      let defaultArgs = XPCOMUtils.defineLazyServiceGetter(
-          this,
-          "BrowserHandler",
-          "@mozilla.org/browser/clh;1",
-          "nsIBrowserHandler"
-          ).defaultArgs;
+      ).defaultArgs;
 
       // If the given URI is different from the homepage, we want to load it.
       if (uri != defaultArgs) {
@@ -2911,13 +2904,7 @@ function focusAndSelectUrlBar() {
 function openLocation(event) {
   if (window.location.href == AppConstants.BROWSER_CHROME_URL) {
     focusAndSelectUrlBar();
-    // We don't want to reopen or requery if the view is open.
-    if (gURLBar.view.isOpen) {
-      return;
-    }
-    if (!gURLBar.view.maybeReopen() && gURLBar.openViewOnFocus) {
-      gURLBar.startQuery({ event });
-    }
+    gURLBar.view.autoOpen({ event });
     return;
   }
 
@@ -4850,18 +4837,10 @@ function toOpenWindowByType(inType, uri, features) {
 function OpenBrowserWindow(options) {
   var telemetryObj = {};
   TelemetryStopwatch.start("FX_NEW_WINDOW_MS", telemetryObj);
-/*
+
   var handler = Cc["@mozilla.org/browser/clh;1"].getService(
     Ci.nsIBrowserHandler
   );
-*/
-  var handler = XPCOMUtils.defineLazyServiceGetter(
-    this,
-    "BrowserHandler",
-    "@mozilla.org/browser/clh;1",
-    "nsIBrowserHandler"
-    );
-
   var defaultArgs = handler.defaultArgs;
   var wintype = document.documentElement.getAttribute("windowtype");
 
