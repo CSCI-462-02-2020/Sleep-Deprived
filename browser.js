@@ -2336,12 +2336,8 @@ var gBrowserInit = {
       }
 
       let uri = window.arguments[0];
-      let defaultArgs = XPCOMUtils.defineLazyServiceGetter(
-          this,
-          "BrowserHandler",
-          "@mozilla.org/browser/clh;1",
-          "nsIBrowserHandler"
-          );
+      let defaultArgs = BrowserHandler.defaultArgs;
+
 
       // If the given URI is different from the homepage, we want to load it.
       if (uri != defaultArgs) {
@@ -4841,12 +4837,7 @@ function OpenBrowserWindow(options) {
   var telemetryObj = {};
   TelemetryStopwatch.start("FX_NEW_WINDOW_MS", telemetryObj);
 
-  var handler = XPCOMUtils.defineLazyServiceGetter(
-    this,
-    "BrowserHandler",
-    "@mozilla.org/browser/clh;1",
-    "nsIBrowserHandler"
-    );
+  var handler = BrowserHandler;
   var defaultArgs = handler.defaultArgs;
   var wintype = document.documentElement.getAttribute("windowtype");
 
