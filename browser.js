@@ -15,6 +15,7 @@ ChromeUtils.import("resource://gre/modules/NotificationDB.jsm");
 // lazy module getters
 
 XPCOMUtils.defineLazyModuleGetters(this, {
+  AboutNewTabStartupRecorder: "resource:///modules/AboutNewTabService.jsm",
   AddonManager: "resource://gre/modules/AddonManager.jsm",
   AMTelemetry: "resource://gre/modules/AddonManager.jsm",
   NewTabPagePreloading: "resource:///modules/NewTabPagePreloading.jsm",
@@ -224,14 +225,11 @@ XPCOMUtils.defineLazyScriptGetter(
   "SearchOneOffs",
   "chrome://browser/content/search/search-one-offs.js"
 );
-if (AppConstants.NIGHTLY_BUILD) {
-  XPCOMUtils.defineLazyScriptGetter(
-    this,
-    "gGfxUtils",
-    "chrome://browser/content/browser-graphics-utils.js"
-  );
-}
-
+XPCOMUtils.defineLazyScriptGetter(
+  this,
+  "gGfxUtils",
+  "chrome://browser/content/browser-graphics-utils.js"
+);
 XPCOMUtils.defineLazyScriptGetter(
   this,
   "pktUI",
@@ -2072,20 +2070,6 @@ var gBrowserInit = {
       }
     });
 
-    CaptivePortalWatcher.delayedStartup();
-
-    this.delayedStartupFinished = true;
-
-    _resolveDelayedStartup();
-
-    SessionStore.promiseAllWindowsRestored.then(() => {
-      this._schedulePerWindowIdleTasks();
-      document.documentElement.setAttribute("sessionrestored", "true");
-    });
-
-    Services.obs.notifyObservers(window, "browser-delayed-startup-finished");
-    TelemetryTimestamps.add("delayedStartupFinished");
-
     if (BrowserHandler.kiosk) {
       // We don't modify popup windows for kiosk mode
       if (!gURLBar.readOnly) {
@@ -2096,6 +2080,19 @@ var gBrowserInit = {
     if (!Services.policies.isAllowed("hideShowMenuBar")) {
       document.getElementById("toolbar-menubar").removeAttribute("toolbarname");
     }
+
+    CaptivePortalWatcher.delayedStartup();
+
+    SessionStore.promiseAllWindowsRestored.then(() => {
+      this._schedulePerWindowIdleTasks();
+      document.documentElement.setAttribute("sessionrestored", "true");
+    });
+
+    this.delayedStartupFinished = true;
+    _resolveDelayedStartup();
+    Services.obs.notifyObservers(window, "browser-delayed-startup-finished");
+    TelemetryTimestamps.add("delayedStartupFinished");
+    // We've announced that delayed startup has finished. Do not add code past this point.
   },
 
   _setInitialFocus() {
@@ -2303,11 +2300,17 @@ var gBrowserInit = {
       NewTabPagePreloading.maybeCreatePreloadedBrowser(window);
     });
 
+    scheduleIdleTask(reportRemoteSubframesEnabledTelemetry);
+
     if (AppConstants.NIGHTLY_BUILD) {
       scheduleIdleTask(() => {
         FissionTestingUI.init();
       });
     }
+
+    scheduleIdleTask(() => {
+      gGfxUtils.init();
+    });
 
     // This should always go last, since the idle tasks (except for the ones with
     // timeouts) should execute in order. Note that this observer notification is
@@ -2336,11 +2339,13 @@ var gBrowserInit = {
       }
 
       let uri = window.arguments[0];
-      let defaultArgs = BrowserHandler.defaultArgs;
 
+      let defaultArgs = BrowserHandler.defaultArgs;
 
       // If the given URI is different from the homepage, we want to load it.
       if (uri != defaultArgs) {
+        AboutNewTabStartupRecorder.noteNonDefaultStartup();
+
         if (uri instanceof Ci.nsIArray) {
           // Transform the nsIArray of nsISupportsString's into a JS Array of
           // JS strings.
@@ -2566,28 +2571,33 @@ const SiteSpecificBrowserUI = {
   },
 
   removeSSBFromMenu(ssb) {
-    let button = document.getElementById("ssb-button-" + ssb.id);
-    if (!button) {
+    let container = document.getElementById("ssb-button-" + ssb.id);
+    if (!container) {
       return;
     }
 
-    if (!button.nextElementSibling && !button.previousElementSibling) {
+    if (!container.nextElementSibling && !container.previousElementSibling) {
       document.getElementById("appMenu-ssb-button").hidden = true;
     }
 
+    let button = container.querySelector(".ssb-launch");
     let uri = button.getAttribute("image");
     if (uri) {
       URL.revokeObjectURL(uri);
     }
 
-    button.remove();
+    container.remove();
   },
 
   addSSBToMenu(ssb) {
+    let container = document.createXULElement("toolbaritem");
+    container.id = `ssb-button-${ssb.id}`;
+    container.className = "toolbaritem-menu-buttons";
+
     let menu = document.createXULElement("toolbarbutton");
-    menu.id = "ssb-button-" + ssb.id;
-    menu.className = "subviewbutton subviewbutton-iconic";
+    menu.className = "ssb-launch subviewbutton subviewbutton-iconic";
     menu.setAttribute("label", ssb.name);
+    menu.setAttribute("flex", "1");
 
     ssb.getScaledIcon(16 * devicePixelRatio).then(
       icon => {
@@ -2604,7 +2614,18 @@ const SiteSpecificBrowserUI = {
       ssb.launch();
     });
 
-    this.panelBody.append(menu);
+    let uninstall = document.createXULElement("toolbarbutton");
+    uninstall.className = "ssb-uninstall subviewbutton subviewbutton-iconic";
+    // Hardcoded for now. Localization tracked in bug 1602528.
+    uninstall.setAttribute("tooltiptext", "Uninstall");
+
+    uninstall.addEventListener("command", () => {
+      ssb.uninstall();
+    });
+
+    container.append(menu);
+    container.append(uninstall);
+    this.panelBody.append(container);
     document.getElementById("appMenu-ssb-button").hidden = false;
   },
 
@@ -2906,7 +2927,6 @@ function openLocation(event) {
     gURLBar.view.autoOpen({ event });
     return;
   }
-
   // If there's an open browser window, redirect the command there.
   let win = getTopWin();
   if (win) {
@@ -3715,15 +3735,6 @@ function BrowserReloadWithFlags(reloadFlags) {
         );
         gBrowser._insertBrowser(tab);
       }
-    } else if (browser.hasAttribute("recordExecution")) {
-      // Recording tabs always use new content processes when reloading, to get
-      // a fresh recording.
-      gBrowser.updateBrowserRemoteness(browser, {
-        recordExecution: "*",
-        newFrameloader: true,
-        remoteType: E10SUtils.DEFAULT_REMOTE_TYPE,
-      });
-      loadBrowserURI(browser, url);
     } else {
       unchangedRemoteness.push(tab);
     }
@@ -4837,8 +4848,10 @@ function OpenBrowserWindow(options) {
   var telemetryObj = {};
   TelemetryStopwatch.start("FX_NEW_WINDOW_MS", telemetryObj);
 
-  var handler = BrowserHandler;
-  var defaultArgs = handler.defaultArgs;
+  // use the BrowserHandler lazy getter instead of nsIBrowserHandler
+
+  var defaultArgs = BrowserHandler.defaultArgs;
+
   var wintype = document.documentElement.getAttribute("windowtype");
 
   var extraFeatures = "";
@@ -5090,11 +5103,11 @@ function updateUserContextUIIndicator() {
 
   replaceContainerClass("color", hbox, identity.color);
 
-  let label = document.getElementById("userContext-label");
-  label.setAttribute(
-    "value",
-    ContextualIdentityService.getUserContextLabel(userContextId)
-  );
+  let label = ContextualIdentityService.getUserContextLabel(userContextId);
+  document.getElementById("userContext-label").setAttribute("value", label);
+  // Also set the container label as the tooltip so we can only show the icon
+  // in small windows.
+  hbox.setAttribute("tooltiptext", label);
 
   let indicator = document.getElementById("userContext-indicator");
   replaceContainerClass("icon", indicator, identity.icon);
@@ -5168,7 +5181,7 @@ var XULBrowserWindow = {
   },
 
   forceInitialBrowserNonRemote(aOpener) {
-    gBrowser.updateBrowserRemoteness(gBrowser.initialBrowser, {
+    gBrowser.updateBrowserRemoteness(gBrowser.selectedBrowser, {
       opener: aOpener,
       remoteType: E10SUtils.NOT_REMOTE,
     });
@@ -5800,6 +5813,7 @@ var CombinedStopReload = {
     this._cancelTransition();
     this.stop.removeEventListener("click", this);
     this.stopReloadContainer.removeEventListener("animationend", this);
+    this.stopReloadContainer.removeEventListener("animationcancel", this);
     this.stopReloadContainer = null;
     this.reload = null;
     this.stop = null;
@@ -5812,6 +5826,7 @@ var CombinedStopReload = {
           this._stopClicked = true;
         }
         break;
+      case "animationcancel":
       case "animationend": {
         if (
           event.target.classList.contains("toolbarbutton-animatable-image") &&
@@ -5848,6 +5863,7 @@ var CombinedStopReload = {
       Services.prefs.getBoolPref("browser.stopReloadAnimation.enabled");
     Services.prefs.addObserver("toolkit.cosmeticAnimations.enabled", this);
     this.stopReloadContainer.addEventListener("animationend", this);
+    this.stopReloadContainer.addEventListener("animationcancel", this);
   },
 
   onTabSwitch() {
@@ -7617,7 +7633,7 @@ var gPageStyleMenu = {
       let actor = global.getActor("PageStyle");
       actor.sendAsyncMessage(message, data);
 
-      contextsToVisit.push(...currentContext.getChildren());
+      contextsToVisit.push(...currentContext.children);
     }
   },
 
@@ -8445,7 +8461,7 @@ function ReportFalseDeceptiveSite() {
       });
     }
 
-    contextsToVisit.push(...currentContext.getChildren());
+    contextsToVisit.push(...currentContext.children);
   }
 }
 
@@ -9398,9 +9414,25 @@ var ConfirmationHint = {
   },
 };
 
+function reportRemoteSubframesEnabledTelemetry() {
+  let autostart = Services.prefs.getBoolPref("fission.autostart");
+
+  let categoryLabel = gFissionBrowser ? "Enabled" : "Disabled";
+  if (autostart == gFissionBrowser) {
+    categoryLabel += "ByAutostart";
+  } else {
+    categoryLabel += "ByUser";
+  }
+
+  Services.telemetry
+    .getHistogramById("WINDOW_REMOTE_SUBFRAMES_ENABLED_STATUS")
+    .add(categoryLabel);
+}
+
 if (AppConstants.NIGHTLY_BUILD) {
   var FissionTestingUI = {
     init() {
+      // Handle the Fission/Non-Fission testing UI.
       let autostart = Services.prefs.getBoolPref("fission.autostart");
       if (!autostart) {
         return;
@@ -9413,6 +9445,33 @@ if (AppConstants.NIGHTLY_BUILD) {
 
       newFissionWindow.hidden = gFissionBrowser;
       newNonFissionWindow.hidden = !gFissionBrowser;
+
+      if (!Cu.isInAutomation) {
+        // We don't want to display the warning in automation as it messes with many tests
+        // that rely on a specific state of the screen at the end of startup.
+        this.checkFissionWithoutWebRender();
+      }
+    },
+
+    // Display a warning if we're attempting to use Fission without WebRender
+    checkFissionWithoutWebRender() {
+      let isFissionEnabled = Services.prefs.getBoolPref("fission.autostart");
+      if (!isFissionEnabled) {
+        return;
+      }
+
+      let isWebRenderEnabled = Services.prefs.getBoolPref("gfx.webrender.all");
+
+      if (isWebRenderEnabled) {
+        return;
+      }
+      // Note: Test is hardcoded in English. This is a Nightly-locked warning, so we can afford to.
+      window.gNotificationBox.appendNotification(
+        "You are running with Fission enabled but without WebRender. This combination is untested, so use at your own risk.",
+        "warning-fission-without-webrender-notification",
+        "chrome://global/skin/icons/question-16.png",
+        window.gNotificationBox.PRIORITY_WARNING_LOW
+      );
     },
   };
 }
